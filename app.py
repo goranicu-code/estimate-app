@@ -1,116 +1,184 @@
 import streamlit as st
 import pandas as pd
+from datetime import datetime
+import time
 
 # -----------------------------------------------------------
-# 1. 구글 시트 연동 설정
+# 1. 기초 설정 및 데이터 정의
 # -----------------------------------------------------------
-# [중요] 아까 복사한 '웹에 게시' 주소를 따옴표 안에 붙여넣으세요!
-# 이렇게 바꾸세요! (st.secrets가 금고입니다)
-SHEET_URL = st.secrets["private_sheet_url"]
+st.set_page_config(page_title="베스트 화학 기계 견적 시스템", layout="wide")
 
-st.set_page_config(page_title="화학설비 원스톱 시스템", layout="wide")
-st.title("🏭 베스트 화학 기계 - 클라우드 단가표 연동 버전")
+# URL에서 견적 ID가 있는지 확인 (링크 타고 들어왔을 때용)
+query_params = st.query_params
+current_quote_id = query_params.get("quote_id", None)
 
-# 데이터 불러오기 함수 (캐시 기능: 60초마다 갱신)
-@st.cache_data(ttl=60) 
-def load_data():
-    try:
-        # 구글 시트(CSV)를 인터넷에서 바로 읽어옵니다
-        df_price = pd.read_csv(SHEET_URL)
-        return df_price
-    except Exception as e:
-        return None
+st.title("🏭 베스트 화학 기계 - 전문가용 견적 시스템")
 
-# 데이터 로드
-df_price = load_data()
+# --- (A) 데이터 매핑 (사장님이 불러주신 규칙들) ---
+# 1. 설비별 용량 리스트
+CAPACITY_MAP = {
+    "베스트밀": [5, 10, 30, 40, 50],
+    "퍼펙트밀": [5, 10, 30, 40, 50],
+    "탑밀": [20, 30, 40, 50],
+    "바스켓밀": ["1~4L", "20~40L", "100L", "200L", "300L", "500L", "1000L", "3000L", "5000L"],
+    "충진기": ["1구", "2구"]
+}
+
+# 2. 메인 모터 자동 선택 규칙 (설비용량 -> 모터마력)
+MAIN_MOTOR_AUTO_MAP = {
+    "베스트밀": {5: "10HP", 10: "15HP", 20: "20HP", 30: "30HP", 40: "40HP", 50: "50HP"},
+    "퍼펙트밀": {5: "10HP", 10: "15HP", 20: "20HP", 30: "30HP", 40: "40HP", 50: "50HP"},
+    "탑밀": {20: "30HP", 30: "40HP", 40: "50HP", 50: "60HP"},
+    "바스켓밀": {"1~4L": "2HP", "20~40L": "5HP", "100L": "20HP", "200L": "30HP", "300L": "40HP", "500L": "50HP", "1000L": "60HP", "3000L": "125HP", "5000L": "200HP"}
+}
+
+# 3. 서브 모터 자동 선택 규칙
+SUB_MOTOR_AUTO_MAP = {
+    "베스트밀": {5: "1HP", 10: "2HP", 20: "2HP", 30: "2HP", 40: "2HP", 50: "3HP"},
+    "퍼펙트밀": {5: "1HP", 10: "2HP", 20: "2HP", 30: "2HP", 40: "2HP", 50: "3HP"},
+    "탑밀": {20: "2HP", 30: "2HP", 40: "2HP", 50: "3HP"},
+    "바스켓밀": {"1~4L": "없음", "20~40L": "없음", "100L": "5HP", "200L": "10HP", "300L": "10HP", "500L": "15HP", "1000L": "20HP", "3000L": "50HP", "5000L": "100HP"}
+}
+
+# 4. 선택 가능한 모터 전체 리스트 (변경 가능하도록)
+ALL_MOTORS = ["없음", "1HP", "2HP", "3HP", "5HP", "10HP", "15HP", "20HP", "30HP", "40HP", "50HP", "60HP", "75HP", "100HP", "125HP", "200HP"]
 
 # -----------------------------------------------------------
-# 2. 에러 처리 (주소 잘못 넣었을 때)
+# 2. UI 및 로직 구현
 # -----------------------------------------------------------
-if df_price is None:
-    st.error("🚨 구글 시트를 불러올 수 없습니다!")
-    st.warning("1. 코드 위쪽 `SHEET_URL`에 주소를 제대로 넣었는지 확인하세요.")
-    st.warning("2. 구글 시트 '웹에 게시' 설정이 '쉼표로 구분된 값(.csv)'인지 확인하세요.")
-    st.stop() # 프로그램 중단
 
-# -----------------------------------------------------------
-# 3. 사이드바 입력
-# -----------------------------------------------------------
+# 세션 상태 초기화 (자동 선택 로직을 위해 필요)
+if 'last_capacity' not in st.session_state:
+    st.session_state['last_capacity'] = None
+
 with st.sidebar:
-    st.header("📝 견적 조건 설정")
-    equip_type = st.selectbox("설비 종류", ["바스켓 밀", "다이노 밀", "고속 믹서"])
-    capacity = st.number_input("용량 (L)", value=500, step=100)
-    is_explosion = st.checkbox("방폭 (Ex d)", value=True)
+    st.header("1. 견적 상세 조건")
     
+    # 1.1 설비 종류
+    equip_type = st.selectbox(
+        "설비 종류", 
+        ["베스트밀", "퍼펙트밀", "탑밀", "바스켓밀", "믹서", "진공탈포기", "충진기"]
+    )
+
+    # 1.2 설비 용량 로직
+    capacity = None
+    if equip_type in ["믹서", "진공탈포기"]:
+        st.info("💡 믹서/탈포기는 메인 모터 용량을 기준으로 설정합니다.")
+    elif equip_type == "충진기":
+        capacity = st.selectbox("충진구 수", CAPACITY_MAP["충진기"])
+    else:
+        # 밀 종류 (Capacity Map에 있는 것들)
+        capacity = st.selectbox("설비 용량", CAPACITY_MAP.get(equip_type, []))
+
+    # --- 여기서부터 '자동 선택' 마법이 일어납니다 ---
+    
+    # 기본값 설정
+    default_main_index = 0
+    default_sub_index = 0
+
+    # (A) 용량이 변경되었을 때, 추천 모터 찾기
+    if capacity and equip_type in MAIN_MOTOR_AUTO_MAP:
+        # 1. 메인 모터 추천값 찾기
+        rec_main = MAIN_MOTOR_AUTO_MAP[equip_type].get(capacity, "없음")
+        if rec_main in ALL_MOTORS:
+            default_main_index = ALL_MOTORS.index(rec_main)
+        
+        # 2. 서브 모터 추천값 찾기
+        rec_sub = SUB_MOTOR_AUTO_MAP.get(equip_type, {}).get(capacity, "없음")
+        if rec_sub in ALL_MOTORS:
+            default_sub_index = ALL_MOTORS.index(rec_sub)
+
+    # 1.3 메인 모터 출력 (User가 바꿀 수 있음)
+    if equip_type == "충진기":
+        main_hp = "없음"
+        st.text("메인 모터: 없음")
+    elif equip_type in ["믹서", "진공탈포기"]:
+        # 믹서는 자동 선택 없이 그냥 선택
+        main_hp = st.selectbox("메인 모터 출력", ALL_MOTORS[1:]) # '없음' 제외하고 보여줌
+    else:
+        # 밀 종류는 자동 선택된 값을 Default로 보여주되, 수정 가능
+        # key를 넣어서 리셋 방지, index를 넣어서 자동 선택 반영
+        main_hp = st.selectbox("메인 모터 출력", ALL_MOTORS, index=default_main_index)
+
+    # 1.4 서브 모터 출력
+    if equip_type in ["믹서", "진공탈포기", "이송펌프", "충진기"]:
+        sub_hp = "없음"
+        st.text("서브 모터: 없음")
+    else:
+        sub_hp = st.selectbox("서브 모터 출력", ALL_MOTORS, index=default_sub_index)
+
     st.divider()
-    option_jacket = st.checkbox("자켓 (Heating/Cooling)")
 
-    # 데이터 새로고침 버튼
-    if st.button("🔄 최신 단가 가져오기"):
-        st.cache_data.clear() # 캐시 삭제
-        st.rerun()
+    # 1.5 방폭 타입
+    explosion_type = st.radio("방폭 타입", ["비방폭", "EG3", "d2G4 (내압방폭)"])
 
-    run_calc = st.button("💰 견적 산출하기", type="primary")
+    # 1.6 재질
+    material = st.radio("접액부 재질", ["일반 철 (SS400)", "스테인리스 (SUS304)"])
 
-# -----------------------------------------------------------
-# 4. 견적 계산 로직 (구글 시트 데이터 사용)
-# -----------------------------------------------------------
-def calculate_real_price(capa, explosion, jacket, db):
-    bom_list = [] 
-    total_price = 0
-    
-    # (1) 모터 선정 로직
-    hp = "20HP" if capa <= 500 else "40HP"
-    # 구글시트 품목명과 일치해야 함
-    motor_name = f"메인모터(방폭)" if explosion else "메인모터" 
-    
-    try:
-        # 구글 시트에서 조건에 맞는 행 찾기
-        motor_row = db[ (db['품목'] == motor_name) & (db['규격'] == hp) ]
-        if not motor_row.empty:
-            price = motor_row.iloc[0]['단가']
-            bom_list.append({"항목": f"모터 ({motor_name})", "규격": hp, "금액": price})
-            total_price += price
-        else:
-             bom_list.append({"항목": f"모터 ({motor_name})", "규격": "단가표 없음", "금액": 0})
-    except:
-        pass
+    # 1.7 기타 옵션
+    options = st.text_area("기타 요청사항 (옵션)", placeholder="예: 리프트 행정 500mm 추가, 인버터 메이커 LS로 변경 등")
 
-    # (2) 탱크(SUS) - 단가표의 'SUS304 Plate' 단가 사용
-    try:
-        # 품목명에 'SUS'가 포함된 첫 번째 자재의 단가를 가져옴
-        sus_row = db[ db['품목'].str.contains("SUS") ].iloc[0]
-        unit_price = sus_row['단가']
-        weight = capa * 1.5 
-        mat_cost = weight * unit_price
-        bom_list.append({"항목": "제관 자재비 (Tank)", "규격": f"{weight}kg 예상", "금액": int(mat_cost)})
-        total_price += mat_cost
-    except:
-        bom_list.append({"항목": "SUS 자재", "규격": "단가표 확인불가", "금액": 0})
+    # [견적 산출 및 저장] 버튼
+    save_btn = st.button("💾 견적 산출 및 DB 저장", type="primary")
 
-    # (3) 옵션
-    if option_jacket:
-        bom_list.append({"항목": "자켓 가공비", "규격": "Double", "금액": 1500000})
-        total_price += 1500000
-    
-    return total_price, pd.DataFrame(bom_list)
 
 # -----------------------------------------------------------
-# 5. 결과 화면
+# 3. 견적 결과 처리 및 링크 생성
 # -----------------------------------------------------------
-if run_calc:
-    final_price, df_bom = calculate_real_price(capacity, is_explosion, option_jacket, df_price)
+if save_btn:
+    # 3.1 견적 ID 생성 (YYMMDDHHMM)
+    now = datetime.now()
+    quote_id = now.strftime("%y%m%d%H%M")
     
-    col1, col2 = st.columns(2)
+    # 3.2 링크 생성 (현재 주소 + ID)
+    # 로컬에서 돌릴 땐 localhost, 배포하면 그 주소가 됨
+    base_url = "https://share.streamlit.io/..." # 배포 후 사장님 실제 주소로 바뀌는 부분
+    # 실제로는 현재 브라우저 주소를 가져오기 힘드니, 배포된 주소를 안다면 하드코딩하거나
+    # 스트림릿 URL 구조상 아래처럼 쿼리를 붙입니다.
+    quote_link = f"?quote_id={quote_id}"
+
+    # 3.3 저장할 데이터 정리
+    save_data = {
+        "견적ID": quote_id,
+        "날짜": now.strftime("%Y-%m-%d"),
+        "설비종류": equip_type,
+        "용량": str(capacity) if capacity else "-",
+        "메인모터": main_hp,
+        "서브모터": sub_hp,
+        "방폭": explosion_type,
+        "재질": material,
+        "옵션": options,
+        "링크": quote_link
+    }
+
+    # --- 화면 표시 ---
+    st.success(f"견적이 산출되었습니다! (ID: {quote_id})")
+    
+    col1, col2 = st.columns([1, 2])
     
     with col1:
-        st.subheader("🧾 상세 견적서")
-        st.dataframe(df_bom, use_container_width=True)
-        st.divider()
-        st.metric("총 합계 금액", f"{int(final_price):,} 원")
-        
-    with col2:
-        st.subheader("📋 현재 적용된 단가표 (Google Sheet)")
-        st.caption("자재팀이 구글 시트를 수정하면 여기도 바뀝니다.")
+        st.subheader("📋 견적 요약")
+        st.write(f"**설비:** {equip_type} {capacity if capacity else ''}")
+        st.write(f"**모터:** Main {main_hp} / Sub {sub_hp}")
+        st.write(f"**사양:** {explosion_type} / {material}")
+        st.info("💵 예상 견적가: (단가표 연동 로직 적용 예정)") 
+        # (여기에 이전에 만든 단가 계산 로직을 연결하면 됩니다)
 
-        st.dataframe(df_price)
+    with col2:
+        st.subheader("💾 DB 저장 데이터 미리보기")
+        st.caption("아래 내용이 '견적DB' 시트에 저장됩니다.")
+        df_save = pd.DataFrame([save_data])
+        st.dataframe(df_save)
+        
+        st.warning("⚠️ 중요: 구글 시트에 '쓰기(저장)'를 하려면 권한 설정이 필요합니다.")
+        st.code(f"생성된 견적 링크: {quote_link}")
+        
+    # 여기에 실제 구글 시트 저장 코드(gspread)가 들어가야 함 (아래 설명 참조)
+
+# -----------------------------------------------------------
+# 4. 링크 타고 들어왔을 때 (과거 견적 조회)
+# -----------------------------------------------------------
+if current_quote_id:
+    st.divider()
+    st.subheader(f"🔍 과거 견적 조회 중 (ID: {current_quote_id})")
+    st.info("DB가 연결되면 해당 ID의 상세 견적 내용을 이곳에 불러옵니다.")
