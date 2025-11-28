@@ -5,7 +5,8 @@ import pandas as pd
 # 1. 구글 시트 연동 설정
 # -----------------------------------------------------------
 # [중요] 아까 복사한 '웹에 게시' 주소를 따옴표 안에 붙여넣으세요!
-SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQKHBJ0yvCeWUdYNWTEQ9xoPEZchVrOCS8E3WBY3vpw8SRK7qoSiC7AR9A58l-OoQ/pub?gid=1630059230&single=true&output=csv"
+# 이렇게 바꾸세요! (st.secrets가 금고입니다)
+SHEET_URL = st.secrets["private_sheet_url"]
 
 st.set_page_config(page_title="화학설비 원스톱 시스템", layout="wide")
 st.title("🏭 베스트 화학 기계 - 클라우드 단가표 연동 버전")
@@ -111,4 +112,5 @@ if run_calc:
     with col2:
         st.subheader("📋 현재 적용된 단가표 (Google Sheet)")
         st.caption("자재팀이 구글 시트를 수정하면 여기도 바뀝니다.")
+
         st.dataframe(df_price)
