@@ -171,42 +171,41 @@ if st.session_state['quote_data'] is not None:
     
     with c1:
         # DB 저장 버튼
+        # (3) 저장 및 이동 버튼
+    c1, c2 = st.columns(2)
+    
+    with c1:
+        # DB 저장 버튼
         if st.button("💾 견적 DB에 최종 저장"):
-            if not os.path.exists(JSON_FILE):
-                st.error("🚨 'service_account.json' 파일이 없습니다! 권한 설정부터 해주세요.")
-            else:
+            try:
+                # [수정됨] 파일을 다시 찾지 않고, 위에서 이미 로그인한 'client'를 바로 씁니다.
+                sheet = client.open_by_url(REAL_SHEET_URL)
+                
+                # 1. '견적DB' 시트에 요약 정보 저장
                 try:
-                    # 구글 시트 연결
-                    creds = ServiceAccountCredentials.from_json_keyfile_name(JSON_FILE, SCOPE)
-                    client = gspread.authorize(creds)
-                    # 실제 시트 열기 (URL 또는 이름으로)
-                    sheet = client.open_by_url(REAL_SHEET_URL)
-                    
-                    # 1. '견적DB' 시트에 요약 정보 저장
-                    try:
-                        ws_db = sheet.worksheet("견적DB")
-                    except:
-                        # 시트 없으면 생성
-                        ws_db = sheet.add_worksheet(title="견적DB", rows=100, cols=20)
-                        ws_db.append_row(["견적ID", "날짜", "설비", "용량", "메인", "서브", "방폭", "재질", "옵션", "총액", "링크"])
-                    
-                    # 데이터 준비
-                    q = st.session_state['quote_data']
-                    row_data = [
-                        q['견적ID'], q['날짜'], q['설비'], q['용량'], q['메인'], q['서브'], 
-                        q['방폭'], q['재질'], q['옵션'], int(total_estimate), 
-                        f"https://share.streamlit.io/...?quote_id={q['견적ID']}" # 나중에 실제 배포 주소로 변경
-                    ]
-                    ws_db.append_row(row_data)
-                    
-                    # 2. '견적상세' 시트에 BOM 저장 (선택사항)
-                    # (여기까지 하면 너무 복잡해지니 일단 요약정보만 저장합니다)
-                    
-                    st.success("✅ 구글 시트(견적DB)에 성공적으로 저장되었습니다!")
-                    st.balloons()
-                    
-                except Exception as e:
-                    st.error(f"저장 실패: {e}")
+                    ws_db = sheet.worksheet("견적DB")
+                except:
+                    # 시트 없으면 생성
+                    ws_db = sheet.add_worksheet(title="견적DB", rows=100, cols=20)
+                    ws_db.append_row(["견적ID", "날짜", "설비", "용량", "메인", "서브", "방폭", "재질", "옵션", "총액", "링크"])
+                
+                # 데이터 준비
+                q = st.session_state['quote_data']
+                # 링크 생성 (현재 배포된 주소가 없으면 빈칸 처리)
+                quote_link = f"https://share.streamlit.io/...?quote_id={q['견적ID']}"
+
+                row_data = [
+                    q['견적ID'], q['날짜'], q['설비'], q['용량'], q['메인'], q['서브'], 
+                    q['방폭'], q['재질'], q['옵션'], int(total_estimate), 
+                    quote_link
+                ]
+                ws_db.append_row(row_data)
+                
+                st.success("✅ 구글 시트(견적DB)에 성공적으로 저장되었습니다!")
+                st.balloons()
+                
+            except Exception as e:
+                st.error(f"저장 실패: {e}")
 
     with c2:
         # 시트로 바로 이동하는 버튼
