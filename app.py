@@ -132,8 +132,7 @@ if calc_btn:
         "옵션": options
     }
     
-    # B. 상세 내역(BOM) 가견적 생성 (여기에 나중에 상세 로직 들어감)
-    # 지금은 수정 기능을 보여주기 위한 예시 데이터
+    # B. 상세 내역(BOM) 가견적 생성
     initial_bom = [
         {"항목": "Main Motor", "규격": main_hp, "단가": 0, "수량": 1, "비고": "자동선택"},
         {"항목": "Sub Motor", "규격": sub_hp, "단가": 0, "수량": 1, "비고": "자동선택"},
@@ -171,14 +170,9 @@ if st.session_state['quote_data'] is not None:
     
     with c1:
         # DB 저장 버튼
-        # (3) 저장 및 이동 버튼
-    c1, c2 = st.columns(2)
-    
-    with c1:
-        # DB 저장 버튼
         if st.button("💾 견적 DB에 최종 저장"):
             try:
-                # [수정됨] 파일을 다시 찾지 않고, 위에서 이미 로그인한 'client'를 바로 씁니다.
+                # 위에서 이미 로그인한 'client'를 바로 씁니다.
                 sheet = client.open_by_url(REAL_SHEET_URL)
                 
                 # 1. '견적DB' 시트에 요약 정보 저장
@@ -191,7 +185,7 @@ if st.session_state['quote_data'] is not None:
                 
                 # 데이터 준비
                 q = st.session_state['quote_data']
-                # 링크 생성 (현재 배포된 주소가 없으면 빈칸 처리)
+                # 링크 생성
                 quote_link = f"https://share.streamlit.io/...?quote_id={q['견적ID']}"
 
                 row_data = [
