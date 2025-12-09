@@ -39,7 +39,7 @@ def get_data(client, sheet_url):
         return None
 
 # --- [중요] 사장님의 실제 구글 시트 주소 ---
-REAL_SHEET_URL = "https://docs.google.com/spreadsheets/d/1qHE0vmiPrF4dC0THfirzIBg_mYshXcGp/edit?gid=1630059230#gid=1630059230"
+REAL_SHEET_URL = "https://docs.google.com/spreadsheets/d/1UQ6_OysueJ07m6Qc5ncfE1NxPCLjc255r6MeFdl0OHQ/edit?gid=1630059230#gid=1630059230"
 
 client = init_connection()
 
@@ -205,5 +205,6 @@ with tab3:
             ws_mat.append_rows(edited_df.values.tolist())
         
         st.success("✅ 저장되었습니다!")
+
 
 
