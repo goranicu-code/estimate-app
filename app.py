@@ -138,13 +138,48 @@ def generate_order_pdf(supplier_info, order_items):
 # 3. 구글 시트 연결
 # -----------------------------------------------------
 @st.cache_resource
+# [수정된 연결 함수] - 훨씬 똑똑해졌습니다!
+@st.cache_resource
 def init_connection():
     SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    if os.path.exists("service_account.json"):
-        creds = ServiceAccountCredentials.from_json_keyfile_name("service_account.json", SCOPE)
-        client = gspread.authorize(creds)
-        return client
-    return None
+    
+    creds_dict = None
+    
+    # 1. 스트림릿 클라우드 비밀 금고(Secrets) 확인
+    # Case A: 정석대로 [gcp_service_account] 제목을 붙인 경우
+    if "gcp_service_account" in st.secrets:
+        creds_dict = st.secrets["gcp_service_account"]
+        # st.write("Debug: Secrets 섹션 발견됨") # 디버깅용
+        
+    # Case B: 제목 없이 내용만 붙여넣은 경우 (흔한 실수 방지)
+    elif "private_key" in st.secrets:
+        creds_dict = st.secrets
+        # st.write("Debug: Secrets 루트에서 키 발견됨") # 디버깅용
+
+    # 2. 내 컴퓨터 파일 확인 (로컬 실행용)
+    elif os.path.exists("service_account.json"):
+        creds_dict = json.load(open("service_account.json"))
+        # st.write("Debug: 로컬 json 파일 발견됨") # 디버깅용
+
+    # 3. 결과 처리
+    if creds_dict is not None:
+        try:
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
+            client = gspread.authorize(creds)
+            return client
+        except Exception as e:
+            st.error(f"🚨 인증 정보는 찾았지만 연결에 실패했습니다: {e}")
+            return None
+    else:
+        # 4. 정말 아무것도 없을 때 (사용자에게 힌트 주기)
+        st.error("🚨 인증 정보를 찾을 수 없습니다!")
+        st.info("💡 힌트: Streamlit Cloud -> Settings -> Secrets 에 내용을 붙여넣으셨나요?")
+        
+        # 현재 Secrets에 뭐가 들어있는지 살짝 보여줌 (보안상 키 이름만)
+        if hasattr(st, 'secrets'):
+            st.code(f"현재 감지된 키 목록: {list(st.secrets.keys())}")
+            
+        return None
 
 # ⚠️ 사장님 진짜 시트 주소
 REAL_SHEET_URL = "https://docs.google.com/spreadsheets/d/1UQ6_OysueJ07m6Qc5ncfE1NxPCLjc255r6MeFdl0OHQ/edit?gid=1122897158#gid=1122897158"
@@ -314,3 +349,4 @@ with tab3:
                     st.success("입고 처리 완료! 재고가 증가했습니다.")
                     time.sleep(1)
                     st.rerun()
+
