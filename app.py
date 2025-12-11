@@ -26,7 +26,7 @@ def ensure_font_exists():
     return True
 
 # -----------------------------------------------------
-# 2. PDF 생성 클래스
+# 2. PDF 생성 클래스 (발주서용)
 # -----------------------------------------------------
 class PDF(FPDF):
     def header(self):
@@ -55,7 +55,7 @@ def generate_order_pdf(supplier_info, order_items):
     # 상단 정보
     pdf.set_fill_color(240, 240, 240)
     pdf.cell(30, 10, "  발  신  인", border=1, fill=True)
-    pdf.cell(160, 10, "  베스트화학기계공업(주)   (담당: 김송이 대리)", border=1, ln=True)
+    pdf.cell(160, 10, "  베스트화학기계공업(주)   (담당: 김송이 과장)", border=1, ln=True)
     pdf.cell(30, 10, "  수  신  인", border=1, fill=True)
     pdf.cell(60, 10, f"  {supplier_info['name']}", border=1)
     pdf.cell(30, 10, "  F   A   X", border=1, fill=True)
@@ -130,6 +130,11 @@ try:
     sh = client.open_by_url(REAL_SHEET_URL)
     ws_mat = sh.worksheet("자재마스터")
     ws_ord = sh.worksheet("발주내역")
+    # 견적 DB 시트 연결 (없으면 생성)
+    try: ws_quote = sh.worksheet("견적DB")
+    except: 
+        ws_quote = sh.add_worksheet(title="견적DB", rows=100, cols=20)
+        ws_quote.append_row(["견적ID", "날짜", "설비", "용량", "메인", "서브", "방폭", "재질", "옵션", "총액"])
 except:
     st.error("구글 시트 연결 실패")
     st.stop()
@@ -156,13 +161,140 @@ def generate_smart_code(supplier, name, spec):
     return f"{sup_code}-{item_code}-{spec_code}"
 
 # -----------------------------------------------------
-# 5. 화면 UI
+# 5. 견적 데이터 매핑 (복구된 로직)
+# -----------------------------------------------------
+CAPACITY_MAP = {
+    "베스트밀": [5, 10, 30, 40, 50],
+    "퍼펙트밀": [5, 10, 30, 40, 50],
+    "탑밀": [20, 30, 40, 50],
+    "바스켓밀": ["1~4L", "20~40L", "100L", "200L", "300L", "500L", "1000L", "3000L", "5000L"],
+    "충진기": ["1구", "2구"]
+}
+MAIN_MOTOR_AUTO_MAP = {
+    "베스트밀": {5: "10HP", 10: "15HP", 20: "20HP", 30: "30HP", 40: "40HP", 50: "50HP"},
+    "퍼펙트밀": {5: "10HP", 10: "15HP", 20: "20HP", 30: "30HP", 40: "40HP", 50: "50HP"},
+    "탑밀": {20: "30HP", 30: "40HP", 40: "50HP", 50: "60HP"},
+    "바스켓밀": {"1~4L": "2HP", "20~40L": "5HP", "100L": "20HP", "200L": "30HP", "300L": "40HP", "500L": "50HP", "1000L": "60HP", "3000L": "125HP", "5000L": "200HP"}
+}
+SUB_MOTOR_AUTO_MAP = {
+    "베스트밀": {5: "1HP", 10: "2HP", 20: "2HP", 30: "2HP", 40: "2HP", 50: "3HP"},
+    "퍼펙트밀": {5: "1HP", 10: "2HP", 20: "2HP", 30: "2HP", 40: "2HP", 50: "3HP"},
+    "탑밀": {20: "2HP", 30: "2HP", 40: "2HP", 50: "3HP"},
+    "바스켓밀": {"1~4L": "없음", "20~40L": "없음", "100L": "5HP", "200L": "10HP", "300L": "10HP", "500L": "15HP", "1000L": "20HP", "3000L": "50HP", "5000L": "100HP"}
+}
+ALL_MOTORS = ["없음", "1HP", "2HP", "3HP", "5HP", "10HP", "15HP", "20HP", "30HP", "40HP", "50HP", "60HP", "75HP", "100HP", "125HP", "200HP"]
+
+# -----------------------------------------------------
+# 6. 화면 UI 메인
 # -----------------------------------------------------
 st.title("🏭 베스트 화학 통합 ERP")
-tab1, tab2, tab3 = st.tabs(["📑 견적 관리", "📦 자재 발주(구매)", "✅ 입고 확인(창고)"])
+tab1, tab2, tab3 = st.tabs(["📑 견적 관리(영업)", "📦 자재 발주(구매)", "✅ 입고 확인(창고)"])
 
+# [탭 1] 견적 시스템 (복구 완료!)
 with tab1:
-    st.info("견적 시스템 영역")
+    st.subheader("1. 견적 상세 조건")
+    
+    col_input1, col_input2 = st.columns(2)
+    
+    with col_input1:
+        equip_type = st.selectbox("설비 종류", ["베스트밀", "퍼펙트밀", "탑밀", "바스켓밀", "믹서", "진공탈포기", "충진기"])
+
+        capacity = None
+        if equip_type in ["믹서", "진공탈포기"]:
+            st.info("💡 믹서/탈포기는 메인 모터 기준")
+        elif equip_type == "충진기":
+            capacity = st.selectbox("충진구 수", CAPACITY_MAP["충진기"])
+        else:
+            capacity = st.selectbox("설비 용량", CAPACITY_MAP.get(equip_type, []))
+
+    # 자동 선택 로직
+    default_main_index = 0
+    default_sub_index = 0
+    if capacity and equip_type in MAIN_MOTOR_AUTO_MAP:
+        rec_main = MAIN_MOTOR_AUTO_MAP[equip_type].get(capacity, "없음")
+        if rec_main in ALL_MOTORS: default_main_index = ALL_MOTORS.index(rec_main)
+        rec_sub = SUB_MOTOR_AUTO_MAP.get(equip_type, {}).get(capacity, "없음")
+        if rec_sub in ALL_MOTORS: default_sub_index = ALL_MOTORS.index(rec_sub)
+
+    with col_input2:
+        if equip_type == "충진기":
+            main_hp = "없음"
+        elif equip_type in ["믹서", "진공탈포기"]:
+            main_hp = st.selectbox("메인 모터", ALL_MOTORS[1:])
+        else:
+            main_hp = st.selectbox("메인 모터", ALL_MOTORS, index=default_main_index)
+
+        if equip_type in ["믹서", "진공탈포기", "이송펌프", "충진기"]:
+            sub_hp = "없음"
+        else:
+            sub_hp = st.selectbox("서브 모터", ALL_MOTORS, index=default_sub_index)
+
+    st.divider()
+    
+    c_opt1, c_opt2, c_opt3 = st.columns(3)
+    with c_opt1:
+        explosion_type = st.radio("방폭 타입", ["비방폭", "EG3", "d2G4 (내압방폭)"])
+    with c_opt2:
+        material = st.radio("접액부 재질", ["일반 철 (SS400)", "스테인리스 (SUS304)"])
+    with c_opt3:
+        options = st.text_area("기타 옵션")
+    
+    # [가견적 산출] 버튼
+    if st.button("📝 가견적 산출 (미리보기)", type="primary"):
+        now = datetime.now()
+        quote_id = now.strftime("%y%m%d%H%M")
+        
+        st.session_state['quote_data'] = {
+            "견적ID": quote_id,
+            "날짜": now.strftime("%Y-%m-%d"),
+            "설비": equip_type,
+            "용량": str(capacity) if capacity else "-",
+            "메인": main_hp,
+            "서브": sub_hp,
+            "방폭": explosion_type,
+            "재질": material,
+            "옵션": options
+        }
+        
+        # 상세 내역(BOM) 가견적 생성
+        initial_bom = [
+            {"항목": "Main Motor", "규격": main_hp, "단가": 0, "수량": 1, "비고": "자동선택"},
+            {"항목": "Sub Motor", "규격": sub_hp, "단가": 0, "수량": 1, "비고": "자동선택"},
+            {"항목": "Body Vessel", "규격": f"{capacity} ({material})", "단가": 0, "수량": 1, "비고": "제관"},
+            {"항목": "Control Panel", "규격": explosion_type, "단가": 0, "수량": 1, "비고": "전장"},
+        ]
+        st.session_state['quote_detail_df'] = pd.DataFrame(initial_bom)
+
+    # 견적 결과 표시
+    if 'quote_data' in st.session_state and st.session_state['quote_data']:
+        st.divider()
+        st.subheader(f"📋 견적서 작성 (ID: {st.session_state['quote_data']['견적ID']})")
+        
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            st.info("요약 정보")
+            st.json(st.session_state['quote_data'])
+        
+        with col2:
+            st.write("👇 **단가 및 수량 수정**")
+            if 'quote_detail_df' in st.session_state:
+                edited_df = st.data_editor(
+                    st.session_state['quote_detail_df'],
+                    num_rows="dynamic",
+                    use_container_width=True
+                )
+                total_estimate = (edited_df['단가'] * edited_df['수량']).sum()
+                st.metric("총 예상 견적가", f"{total_estimate:,} 원")
+
+                if st.button("💾 견적 DB에 최종 저장"):
+                    q = st.session_state['quote_data']
+                    row_data = [
+                        q['견적ID'], q['날짜'], q['설비'], q['용량'], q['메인'], q['서브'], 
+                        q['방폭'], q['재질'], q['옵션'], int(total_estimate)
+                    ]
+                    ws_quote.append_row(row_data)
+                    st.success("✅ 견적 DB에 저장되었습니다!")
+                    st.balloons()
 
 # [탭 2] 자재 발주
 with tab2:
@@ -288,17 +420,9 @@ with tab2:
                             
                             new_rows = []
                             for _, row in current_cart.iterrows():
-                                # [수정됨] 시트 순서(A~H)와 정확히 일치시킴!
-                                # A:ID, B:날짜, C:거래처, D:품명, E:수량, F:상태, G:비고, H:자재코드
                                 new_rows.append([
-                                    order_id,          # A
-                                    now_str,           # B
-                                    row['supplier'],   # C
-                                    row['name'],       # D
-                                    row['qty'],        # E
-                                    "발주완료",         # F
-                                    row['note'],       # G (비고)
-                                    row['code']        # H (자재코드)
+                                    order_id, now_str, row['supplier'], 
+                                    row['name'], row['qty'], "발주완료", row['note'], row['code']
                                 ])
                             ws_ord.append_rows(new_rows)
                             
@@ -315,13 +439,11 @@ with tab2:
 with tab3:
     st.header("✅ 자재 입고 처리")
     
-    # 1. 데이터 읽기
     raw_data = ws_ord.get_all_values()
     
     if len(raw_data) < 2:
         st.info("발주 내역이 없습니다.")
     else:
-        # 헤더 강제 지정
         headers = ["발주ID", "날짜", "거래처", "품명", "수량", "상태", "비고", "자재코드"]
         clean_rows = []
         for row in raw_data[1:]:
@@ -332,67 +454,50 @@ with tab3:
         df_ord = pd.DataFrame(clean_rows, columns=headers)
         df_ord['상태'] = df_ord['상태'].astype(str).str.strip()
         
-        # '발주완료' 상태만 필터링
         pending = df_ord[df_ord['상태'] == "발주완료"].copy()
         
         if pending.empty:
-            st.info("입고 대기 중인 건이 없습니다.")
+            st.info("입고 대기 중인 건이 없습니다. (모두 입고완료 상태이거나 데이터가 없음)")
         else:
             pending['입고확인'] = False
             
-            # [수정된 부분] 화면에 '발주ID'를 포함시켰습니다! (KeyError 해결)
-            # 순서를 보기 좋게 배치 (체크박스, 날짜, 거래처, 품명... 순)
             cols_to_show = ['입고확인', '발주ID', '날짜', '거래처', '품명', '수량', '비고', '자재코드']
-            
             edited_df = st.data_editor(
-                pending[cols_to_show], # 여기에 발주ID가 꼭 있어야 함
+                pending[cols_to_show],
                 column_config={
                     "입고확인": st.column_config.CheckboxColumn("선택", default=False),
-                    "발주ID": st.column_config.TextColumn("발주번호", disabled=True), # 수정 못하게 막음
+                    "발주ID": st.column_config.TextColumn("발주번호", disabled=True),
                 },
                 disabled=['발주ID', '날짜', '거래처', '품명', '수량', '비고', '자재코드'],
-                hide_index=True, 
-                use_container_width=True
+                hide_index=True, use_container_width=True
             )
             
             if st.button("🚚 입고 처리"):
                 to_recv = edited_df[edited_df['입고확인'] == True]
-                
-                if to_recv.empty:
-                    st.warning("항목을 체크해주세요.")
-                else:
-                    with st.spinner("재고 반영 중..."):
-                        mat_data = ws_mat.get_all_records()
-                        mat_map = {str(r['자재코드']): i+2 for i, r in enumerate(mat_data)}
-                        
-                        count = 0
-                        for idx, row in to_recv.iterrows():
-                            # 1. 상태 변경 (발주ID로 위치 찾기)
-                            target_id = str(row['발주ID']) # 이제 에러 안 남!
+                if not to_recv.empty:
+                    mat_data = ws_mat.get_all_records()
+                    mat_map = {str(r['자재코드']): i+2 for i, r in enumerate(mat_data)}
+                    
+                    count = 0
+                    for idx, row in to_recv.iterrows():
+                        target_id = str(row['발주ID'])
+                        cell = ws_ord.find(target_id)
+                        if cell:
+                            ws_ord.update_cell(cell.row, 6, "입고완료")
                             
-                            # 시트에서 해당 ID 찾기
-                            cell = ws_ord.find(target_id)
-                            if cell:
-                                # 6번째 열(F열)이 상태값
-                                ws_ord.update_cell(cell.row, 6, "입고완료")
-                                
-                                # 2. 재고 증가
-                                code = str(row['자재코드'])
-                                try: qty = int(row['수량'])
-                                except: qty = 0
-                                
-                                if code in mat_map:
-                                    cur_stock = 0
-                                    try: 
-                                        # 7번째 열(G열)이 현재고
-                                        val = ws_mat.cell(mat_map[code], 7).value 
-                                        cur_stock = int(str(val).replace(',','')) if val else 0
-                                    except: pass
-                                    
-                                    ws_mat.update_cell(mat_map[code], 7, cur_stock + qty)
-                                count += 1
-                                
-                        st.success(f"{count}건 입고 완료! 재고에 반영되었습니다.")
-                        time.sleep(1)
-                        st.rerun()
-
+                            code = str(row['자재코드'])
+                            try: qty = int(row['수량'])
+                            except: qty = 0
+                            
+                            if code in mat_map:
+                                cur_stock = 0
+                                try: 
+                                    val = ws_mat.cell(mat_map[code], 7).value 
+                                    cur_stock = int(str(val).replace(',','')) if val else 0
+                                except: pass
+                                ws_mat.update_cell(mat_map[code], 7, cur_stock + qty)
+                            count += 1
+                            
+                    st.success(f"{count}건 입고 완료! 재고에 반영되었습니다.")
+                    time.sleep(1)
+                    st.rerun()
