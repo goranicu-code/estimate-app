@@ -26,7 +26,7 @@ def ensure_font_exists():
     return True
 
 # -----------------------------------------------------
-# 2. PDF 생성 클래스 (기존 동일)
+# 2. PDF 생성 클래스
 # -----------------------------------------------------
 class PDF(FPDF):
     def header(self):
@@ -119,7 +119,7 @@ def init_connection():
         except: return None
     return None
 
-REAL_SHEET_URL = "https://docs.google.com/spreadsheets/d/1UQ6_OysueJ07m6Qc5ncfE1NxPCLjc255r6MeFdl0OHQ/edit?gid=2044618684#gid=2044618684"
+REAL_SHEET_URL = "https://docs.google.com/spreadsheets/d/1UQ6_OysueJ07m6Qc5ncfE1NxPCLjc255r6MeFdl0OHQ/edit?gid=1122897158#gid=1122897158"
 
 client = init_connection()
 if not client:
@@ -135,7 +135,7 @@ except:
     st.stop()
 
 # -----------------------------------------------------
-# 4. 스마트 자재코드 생성 함수 (신규 등록용)
+# 4. 스마트 자재코드 생성 함수
 # -----------------------------------------------------
 PREFIX_MAP = {
     '모터': 'MTR', '감속기': 'MTR', '펌프': 'PMP', '베어링': 'BRG', '유니트': 'BRG',
@@ -145,22 +145,14 @@ PREFIX_MAP = {
 }
 
 def generate_smart_code(supplier, name, spec):
-    # 1. 매입처 앞 2글자
     sup_code = supplier[:2] if supplier else "XX"
-    
-    # 2. 품명 약어
     item_code = "ETC"
     for k, v in PREFIX_MAP.items():
         if k in name:
             item_code = v
             break
-            
-    # 3. 규격 앞 3글자
     spec_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', str(spec))
     spec_code = spec_clean[:3].upper() if spec_clean else "000"
-    
-    # 4. 조합 (중복 번호는 일단 생략하고 기본형 생성)
-    # 실제 중복 체크는 DB 넣을 때 하는 게 좋음
     return f"{sup_code}-{item_code}-{spec_code}"
 
 # -----------------------------------------------------
@@ -172,11 +164,10 @@ tab1, tab2, tab3 = st.tabs(["📑 견적 관리", "📦 자재 발주(구매)", 
 with tab1:
     st.info("견적 시스템 영역")
 
-# [탭 2] 자재 발주 (대폭 업그레이드!)
+# [탭 2] 자재 발주
 with tab2:
     st.header("📦 자재 발주 및 신규 등록")
 
-    # DB 로드
     data_mat = ws_mat.get_all_records()
     df_mat = pd.DataFrame(data_mat)
 
@@ -185,9 +176,11 @@ with tab2:
     with col1:
         st.subheader("1. 자재 선택 및 입력")
         
-        # A. 거래처 선택
-        suppliers = sorted(list(set([d['매입처'] for d in data_mat if d['매입처']])))
-        suppliers.insert(0, "➕ 신규 거래처 입력") # 옵션 추가
+        # [수정된 부분] 안전하게 문자열로 변환 후 정렬
+        # d['매입처']가 숫자여도 str()로 감싸서 문자로 만든 뒤 정렬함
+        suppliers_raw = list(set([str(d.get('매입처', '')).strip() for d in data_mat if str(d.get('매입처', '')).strip()]))
+        suppliers = sorted(suppliers_raw)
+        suppliers.insert(0, "➕ 신규 거래처 입력")
         
         sel_supplier = st.selectbox("거래처", suppliers)
         
@@ -195,11 +188,13 @@ with tab2:
         if sel_supplier == "➕ 신규 거래처 입력":
             final_supplier = st.text_input("거래처명 직접 입력")
 
-        # B. 품명 선택 (거래처에 따라 필터링)
+        # 품명 선택 (안전 정렬 적용)
         items_options = []
         if sel_supplier != "➕ 신규 거래처 입력":
             # 해당 거래처의 품명 리스트
-            items_options = sorted(list(set([d['품명'] for d in data_mat if d['매입처'] == sel_supplier])))
+            # 역시 str()로 감싸서 에러 방지
+            items_raw = list(set([str(d.get('품명', '')) for d in data_mat if str(d.get('매입처', '')).strip() == final_supplier]))
+            items_options = sorted(items_raw)
         
         items_options.insert(0, "➕ 신규 품명 입력")
         sel_item = st.selectbox("품명", items_options)
@@ -208,11 +203,12 @@ with tab2:
         if sel_item == "➕ 신규 품명 입력":
             final_item = st.text_input("품명 직접 입력")
 
-        # C. 규격 선택 (품명에 따라 필터링)
+        # 규격 선택 (안전 정렬 적용)
         specs_options = []
         if sel_item != "➕ 신규 품명 입력":
             # 해당 품명의 규격 리스트
-            specs_options = sorted(list(set([d['규격'] for d in data_mat if d['품명'] == sel_item])))
+            specs_raw = list(set([str(d.get('규격', '')) for d in data_mat if str(d.get('품명', '')) == final_item]))
+            specs_options = sorted(specs_raw)
         
         specs_options.insert(0, "➕ 신규 규격 입력")
         sel_spec = st.selectbox("규격", specs_options)
@@ -221,55 +217,58 @@ with tab2:
         if sel_spec == "➕ 신규 규격 입력":
             final_spec = st.text_input("규격 직접 입력")
         
-        # D. 단가 및 수량
-        # 기존 단가가 있으면 가져오고, 신규면 입력 받음
+        # 단가 및 수량
         est_price = 0
         if sel_item != "➕ 신규 품명 입력" and sel_spec != "➕ 신규 규격 입력":
-            # DB에서 검색
-            match = df_mat[(df_mat['품명'] == final_item) & (df_mat['규격'] == final_spec)]
-            if not match.empty:
-                try: est_price = int(str(match.iloc[0]['단가']).replace(',',''))
-                except: est_price = 0
+            # 안전한 필터링 (str 변환 후 비교)
+            # 여기서는 편의상 df_mat 사용 (df_mat은 이미 로드될 때 타입 추론됨)
+            # 하지만 안전하게 하기 위해 match 로직 수정
+            try:
+                match = df_mat[
+                    (df_mat['품명'].astype(str) == final_item) & 
+                    (df_mat['규격'].astype(str) == final_spec)
+                ]
+                if not match.empty:
+                    est_price = int(str(match.iloc[0]['단가']).replace(',',''))
+            except: est_price = 0
         
         price = st.number_input("단가 (원)", value=est_price, step=100)
         qty = st.number_input("발주 수량", min_value=1, value=10)
         note = st.text_input("비고 (납기 등)")
 
-        # E. 장바구니 담기 (자동 등록 로직 포함)
+        # 장바구니
         if 'cart' not in st.session_state: st.session_state['cart'] = []
 
         if st.button("장바구니 담기 ⬇️", type="primary"):
             if not final_supplier or not final_item:
                 st.error("거래처와 품명은 필수입니다.")
             else:
-                # 1. DB에 있는 자재인지 확인
                 is_new = True
                 mat_code = ""
                 
-                # 기존 데이터와 비교
-                match = df_mat[
-                    (df_mat['매입처'] == final_supplier) & 
-                    (df_mat['품명'] == final_item) & 
-                    (df_mat['규격'] == final_spec)
-                ]
-                
+                # 기존 데이터와 비교 (문자열로 변환하여 안전 비교)
+                # 데이터프레임 필터링 시 .astype(str) 사용
+                try:
+                    match = df_mat[
+                        (df_mat['매입처'].astype(str) == final_supplier) & 
+                        (df_mat['품명'].astype(str) == final_item) & 
+                        (df_mat['규격'].astype(str) == final_spec)
+                    ]
+                except:
+                    match = pd.DataFrame() # 에러나면 없는 셈 침
+
                 if not match.empty:
-                    # 이미 있음 -> 기존 코드 사용
                     is_new = False
                     mat_code = match.iloc[0]['자재코드']
                 else:
-                    # 없음 -> 신규 코드 생성 및 자동 등록!
                     is_new = True
                     base_code = generate_smart_code(final_supplier, final_item, final_spec)
-                    # 중복 방지 (간단히 -NEW 붙임, 실제론 DB검색해서 +1 해야 완벽함)
                     mat_code = f"{base_code}-{datetime.now().strftime('%M%S')}" 
                     
-                    # [자동 등록] 구글 시트에 바로 추가
                     new_mat_row = [mat_code, final_item, final_spec, "", price, final_supplier, 0]
                     ws_mat.append_row(new_mat_row)
                     st.toast(f"✨ 새 자재 [{final_item}]가 자재마스터에 자동 등록되었습니다!")
                 
-                # 장바구니 추가
                 st.session_state['cart'].append({
                     'code': mat_code,
                     'name': final_item,
@@ -288,7 +287,6 @@ with tab2:
         if not cart_df.empty:
             st.dataframe(cart_df[['supplier', 'name', 'spec', 'qty', 'note']], hide_index=True)
             
-            # 거래처별로 발주서 생성해야 함
             unique_suppliers = cart_df['supplier'].unique()
             
             for sup in unique_suppliers:
@@ -316,7 +314,6 @@ with tab2:
                                 ])
                             ws_ord.append_rows(new_rows)
                             
-                            # 해당 거래처만 장바구니에서 제거
                             st.session_state['cart'] = [item for item in st.session_state['cart'] if item['supplier'] != sup]
                             st.success(f"{sup} 발주 완료!")
                             time.sleep(1)
@@ -326,14 +323,13 @@ with tab2:
             st.session_state['cart'] = []
             st.rerun()
 
-# [탭 3] 입고 확인 (안전장치 포함)
+# [탭 3] 입고 확인
 with tab3:
     st.header("✅ 자재 입고 처리")
     
     all_orders = ws_ord.get_all_records()
     df_ord = pd.DataFrame(all_orders)
     
-    # 필수 컬럼 안전장치
     for col in ['발주ID', '날짜', '거래처', '품명', '수량', '상태', '비고', '자재코드']:
         if col not in df_ord.columns: df_ord[col] = ""
 
@@ -344,6 +340,7 @@ with tab3:
             st.info("입고 대기 건이 없습니다.")
         else:
             pending['입고확인'] = False
+            # Data Editor
             edited_df = st.data_editor(
                 pending[['입고확인', '날짜', '거래처', '품명', '규격', '수량', '자재코드']] if '규격' in pending.columns else pending[['입고확인', '날짜', '거래처', '품명', '수량', '자재코드']],
                 column_config={"입고확인": st.column_config.CheckboxColumn("선택", default=False)},
@@ -355,27 +352,22 @@ with tab3:
                 to_recv = edited_df[edited_df['입고확인'] == True]
                 if not to_recv.empty:
                     mat_data = ws_mat.get_all_records()
-                    # 자재코드로 행 찾기 Map
                     mat_map = {str(r['자재코드']): i+2 for i, r in enumerate(mat_data)}
                     
                     for idx, row in to_recv.iterrows():
-                        # 상태 변경
-                        # 원본 인덱스 찾기 (pending은 필터된 뷰라서 인덱스가 다를 수 있음 -> reset_index 안 했으므로 인덱스 유지됨)
                         real_row = idx + 2
                         ws_ord.update_cell(real_row, df_ord.columns.get_loc("상태")+1, "입고완료")
                         
-                        # 재고 증가
                         code = str(row['자재코드'])
-                        qty = int(row['수량'])
+                        try: qty = int(row['수량'])
+                        except: qty = 0
                         
                         if code in mat_map:
-                            # 현재고 읽기
                             cur_stock = 0
                             try: 
-                                val = ws_mat.cell(mat_map[code], 7).value # 7=G열(현재고)
+                                val = ws_mat.cell(mat_map[code], 7).value 
                                 cur_stock = int(str(val).replace(',','')) if val else 0
                             except: pass
-                            
                             ws_mat.update_cell(mat_map[code], 7, cur_stock + qty)
                             
                     st.success("입고 완료!")
