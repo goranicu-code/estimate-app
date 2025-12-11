@@ -315,73 +315,84 @@ with tab2:
 with tab3:
     st.header("✅ 자재 입고 처리")
     
-    # [수정됨] 데이터 읽기 로직 강화
-    # 1. 헤더가 없는 경우 대비하여 get_all_values() 사용
+    # 1. 데이터 읽기
     raw_data = ws_ord.get_all_values()
     
     if len(raw_data) < 2:
         st.info("발주 내역이 없습니다.")
     else:
-        # 2. 강제로 헤더 지정 (시트 제목이 틀려도 순서만 맞으면 작동하게 함)
+        # 헤더 강제 지정
         headers = ["발주ID", "날짜", "거래처", "품명", "수량", "상태", "비고", "자재코드"]
-        # 데이터가 8열보다 적으면 빈칸 채움
         clean_rows = []
-        for row in raw_data[1:]: # 헤더 제외
+        for row in raw_data[1:]:
             if len(row) < 8:
                 row += [""] * (8 - len(row))
             clean_rows.append(row[:8])
             
         df_ord = pd.DataFrame(clean_rows, columns=headers)
-
-        # 3. 공백 제거 후 상태 필터링 (가장 흔한 에러 원인)
         df_ord['상태'] = df_ord['상태'].astype(str).str.strip()
         
+        # '발주완료' 상태만 필터링
         pending = df_ord[df_ord['상태'] == "발주완료"].copy()
         
         if pending.empty:
-            st.info("입고 대기 중인 건이 없습니다. (모두 입고완료 상태이거나 데이터가 없음)")
+            st.info("입고 대기 중인 건이 없습니다.")
         else:
             pending['입고확인'] = False
-            # Data Editor
+            
+            # [수정된 부분] 화면에 '발주ID'를 포함시켰습니다! (KeyError 해결)
+            # 순서를 보기 좋게 배치 (체크박스, 날짜, 거래처, 품명... 순)
+            cols_to_show = ['입고확인', '발주ID', '날짜', '거래처', '품명', '수량', '비고', '자재코드']
+            
             edited_df = st.data_editor(
-                pending[['입고확인', '날짜', '거래처', '품명', '수량', '비고', '자재코드']],
-                column_config={"입고확인": st.column_config.CheckboxColumn("선택", default=False)},
-                disabled=['날짜', '거래처', '품명', '수량', '비고', '자재코드'],
-                hide_index=True, use_container_width=True
+                pending[cols_to_show], # 여기에 발주ID가 꼭 있어야 함
+                column_config={
+                    "입고확인": st.column_config.CheckboxColumn("선택", default=False),
+                    "발주ID": st.column_config.TextColumn("발주번호", disabled=True), # 수정 못하게 막음
+                },
+                disabled=['발주ID', '날짜', '거래처', '품명', '수량', '비고', '자재코드'],
+                hide_index=True, 
+                use_container_width=True
             )
             
             if st.button("🚚 입고 처리"):
                 to_recv = edited_df[edited_df['입고확인'] == True]
-                if not to_recv.empty:
-                    mat_data = ws_mat.get_all_records()
-                    mat_map = {str(r['자재코드']): i+2 for i, r in enumerate(mat_data)}
-                    
-                    count = 0
-                    for idx, row in to_recv.iterrows():
-                        # A. 상태 변경
-                        # 원본 시트에서의 행 번호 찾기 (발주ID로 역추적)
-                        target_id = row['발주ID']
+                
+                if to_recv.empty:
+                    st.warning("항목을 체크해주세요.")
+                else:
+                    with st.spinner("재고 반영 중..."):
+                        mat_data = ws_mat.get_all_records()
+                        mat_map = {str(r['자재코드']): i+2 for i, r in enumerate(mat_data)}
                         
-                        # 시트 전체 다시 읽어서 해당 ID의 행 번호 찾기 (안전)
-                        # (속도는 약간 느리지만 가장 정확함)
-                        cell = ws_ord.find(target_id)
-                        if cell:
-                            ws_ord.update_cell(cell.row, 6, "입고완료") # 6 = F열(상태)
+                        count = 0
+                        for idx, row in to_recv.iterrows():
+                            # 1. 상태 변경 (발주ID로 위치 찾기)
+                            target_id = str(row['발주ID']) # 이제 에러 안 남!
                             
-                            # B. 재고 증가
-                            code = str(row['자재코드'])
-                            try: qty = int(row['수량'])
-                            except: qty = 0
-                            
-                            if code in mat_map:
-                                cur_stock = 0
-                                try: 
-                                    val = ws_mat.cell(mat_map[code], 7).value # 7=G열
-                                    cur_stock = int(str(val).replace(',','')) if val else 0
-                                except: pass
-                                ws_mat.update_cell(mat_map[code], 7, cur_stock + qty)
-                            count += 1
-                            
-                    st.success(f"{count}건 입고 완료! 재고에 반영되었습니다.")
-                    time.sleep(1)
-                    st.rerun()
+                            # 시트에서 해당 ID 찾기
+                            cell = ws_ord.find(target_id)
+                            if cell:
+                                # 6번째 열(F열)이 상태값
+                                ws_ord.update_cell(cell.row, 6, "입고완료")
+                                
+                                # 2. 재고 증가
+                                code = str(row['자재코드'])
+                                try: qty = int(row['수량'])
+                                except: qty = 0
+                                
+                                if code in mat_map:
+                                    cur_stock = 0
+                                    try: 
+                                        # 7번째 열(G열)이 현재고
+                                        val = ws_mat.cell(mat_map[code], 7).value 
+                                        cur_stock = int(str(val).replace(',','')) if val else 0
+                                    except: pass
+                                    
+                                    ws_mat.update_cell(mat_map[code], 7, cur_stock + qty)
+                                count += 1
+                                
+                        st.success(f"{count}건 입고 완료! 재고에 반영되었습니다.")
+                        time.sleep(1)
+                        st.rerun()
+
