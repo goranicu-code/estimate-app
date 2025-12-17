@@ -535,14 +535,112 @@ with tab2:
             st.session_state['cart'] = []
             st.rerun()
 
-# [탭 3] 입고 확인
+# [탭 3] 입고 확인 (완전한 코드)
 with tab3:
-    st.header("✅ 자재 입고 처리")
-    # (입고 로직은 기존과 동일하므로 생략 - 정상 작동)
+    st.header("✅ 자재 입고 처리 (재고 자동 반영)")
+    
+    # 1. 발주 내역 불러오기
     raw_data = ws_ord.get_all_values()
+    
     if len(raw_data) < 2:
-        st.info("발주 내역이 없습니다.")
+        st.info("📭 발주 내역이 없습니다.")
     else:
-        # ... (기존 입고 처리 코드 유지)
-        pass # 지면 관계상 생략, 실제 구동시엔 위쪽 코드 그대로 쓰시면 됩니다.
+        # 헤더와 데이터 분리
+        headers = ["발주ID", "날짜", "거래처", "품명", "수량", "상태", "비고", "자재코드"]
+        
+        # 데이터 정제 (열 개수가 안 맞을 경우 보정)
+        clean_rows = []
+        for row in raw_data[1:]:
+            # 행 데이터가 헤더보다 짧으면 빈카드로 채움
+            if len(row) < 8:
+                row += [""] * (8 - len(row))
+            clean_rows.append(row[:8])
+            
+        df_ord = pd.DataFrame(clean_rows, columns=headers)
+        
+        # '상태' 컬럼 공백 제거 (오류 방지)
+        df_ord['상태'] = df_ord['상태'].astype(str).str.strip()
+        
+        # 2. '발주완료' 상태인 것만 필터링 (입고 대기 목록)
+        pending = df_ord[df_ord['상태'] == "발주완료"].copy()
+        
+        if pending.empty:
+            st.success("🎉 현재 대기 중인 입고 건이 없습니다. (모두 처리됨)")
+        else:
+            st.write(f"총 **{len(pending)}**건의 입고 대기 항목이 있습니다.")
+            
+            # 체크박스 컬럼 추가
+            pending.insert(0, "입고확인", False)
+            
+            # 화면에 보여줄 컬럼 지정
+            cols_to_show = ['입고확인', '발주ID', '날짜', '거래처', '품명', '수량', '비고', '자재코드']
+            
+            # 데이터 에디터 (체크박스 기능)
+            edited_df = st.data_editor(
+                pending[cols_to_show],
+                column_config={
+                    "입고확인": st.column_config.CheckboxColumn("선택", default=False),
+                    "발주ID": st.column_config.TextColumn("발주번호", disabled=True),
+                    "수량": st.column_config.NumberColumn("수량", disabled=True),
+                },
+                disabled=['발주ID', '날짜', '거래처', '품명', '수량', '비고', '자재코드'], # 체크박스 외 수정 불가
+                hide_index=True, 
+                use_container_width=True
+            )
+            
+            # 3. 입고 처리 버튼 로직
+            if st.button("🚚 선택 항목 입고 처리 (재고 반영)", type="primary"):
+                # 체크된 항목만 추출
+                to_recv = edited_df[edited_df['입고확인'] == True]
+                
+                if to_recv.empty:
+                    st.warning("입고 처리할 항목을 선택해주세요.")
+                else:
+                    progress_text = st.empty()
+                    progress_text.text("데이터베이스 업데이트 중...")
+                    
+                    # 자재 마스터 데이터 로딩 (재고 업데이트 위치 찾기용)
+                    mat_data = ws_mat.get_all_records()
+                    # 자재코드 : 행번호 매핑 (gspread는 1부터 시작, 헤더 제외하면 +2)
+                    mat_map = {str(r['자재코드']): i+2 for i, r in enumerate(mat_data)}
+                    
+                    success_count = 0
+                    
+                    for idx, row in to_recv.iterrows():
+                        target_id = str(row['발주ID'])
+                        mat_code = str(row['자재코드'])
+                        
+                        try:
+                            qty = int(str(row['수량']).replace(',', ''))
+                        except: 
+                            qty = 0
+                        
+                        # A. 발주 내역 시트 업데이트 ('발주완료' -> '입고완료')
+                        # 발주ID로 해당 행 찾기
+                        cell = ws_ord.find(target_id)
+                        if cell:
+                            # 6번째 열이 '상태'라고 가정
+                            ws_ord.update_cell(cell.row, 6, "입고완료")
+                        
+                        # B. 자재 마스터 시트 재고 수량 증가 (+)
+                        if mat_code in mat_map:
+                            row_num = mat_map[mat_code]
+                            # 현재 재고 가져오기 (7번째 열이 '현재재고'라고 가정)
+                            current_val = ws_mat.cell(row_num, 7).value
+                            
+                            try:
+                                current_stock = int(str(current_val).replace(',', '')) if current_val else 0
+                            except:
+                                current_stock = 0
+                                
+                            new_stock = current_stock + qty
+                            ws_mat.update_cell(row_num, 7, new_stock)
+                            
+                        success_count += 1
+                    
+                    progress_text.empty()
+                    st.success(f"✅ 총 {success_count}건 입고 완료! 재고 수량이 증가했습니다.")
+                    time.sleep(1.5)
+                    st.rerun()
+
 
