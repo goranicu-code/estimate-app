@@ -162,55 +162,110 @@ def generate_smart_code(supplier, name, spec):
 # -----------------------------------------------------
 # 5. 적용설비 매칭 로직 (NEW)
 # -----------------------------------------------------
+# -----------------------------------------------------
+# 5. 적용설비 매칭 로직 (수정된 버전)
+# -----------------------------------------------------
 def check_applicability(tag_string, selection):
     """
-    tag_string: 시트의 '적용설비' 값 (예: '탑밀@-스텐@, 횡형밀@')
+    tag_string: 시트의 '적용설비' 값 (예: '탑밀30L-철@, 횡형밀@')
     selection: 사용자가 선택한 값 딕셔너리
     """
     if not tag_string or str(tag_string).strip() == "": return False
     
+    # 태그를 쉼표로 분리 (공백 제거 포함)
     tags = [t.strip() for t in str(tag_string).split(',')]
     
     sel_equip = selection['equip']   # 예: 탑밀
-    sel_capa = selection['capa']     # 예: 30L
-    sel_explo = selection['explo']   # 예: 방폭
-    sel_mat = selection['mat']       # 예: 스텐 (SUS304)
+    raw_capa = str(selection['capa']) # 예: 30 (숫자일 수 있음)
     
-    # 편의상 '스텐'으로 통일
-    mat_key = "스텐" if "SUS" in sel_mat or "스텐" in sel_mat else "철"
-    explo_key = "방폭" if "비방폭" not in sel_explo and "방폭" in sel_explo else "비방폭"
-    
-    for tag in tags:
-        # 1. 횡형밀 그룹 체크
-        if "횡형밀" in tag:
-            if sel_equip in ["베스트밀", "퍼펙트밀", "탑밀"]: return True
-            
-        # 2. 설비명 체크 (탑밀@, 베스트밀@ 등)
-        # 태그를 '-'로 분리하여 각 조건 확인
-        tokens = tag.split('-')
-        head = tokens[0] # 설비+용량 부분 (예: 탑밀@, 탑밀30L)
-        
-        # 설비명 불일치시 즉시 탈락
-        if "@" in head:
-            base_equip = head.replace("@", "")
-            if base_equip not in sel_equip: continue 
-        else:
-            if head != f"{sel_equip}{sel_capa}": continue
+    # [핵심 수정 1] 숫자만 있는 용량(30) 뒤에 강제로 'L'을 붙여서 비교
+    # 30 -> 30L, 1~4L -> 1~4L (그대로)
+    if raw_capa.isdigit():
+        sel_capa = raw_capa + "L"
+    else:
+        sel_capa = raw_capa
 
-        # 3. 옵션 체크 (방폭, 재질 등)
-        # 남은 토큰들이 현재 선택된 옵션(방폭, 재질) 중 하나라도 포함되어야 함
-        # 예: '스텐@' -> 현재 선택이 '스텐'이면 통과
+    sel_explo_raw = selection['explo'] # 예: 안전증방폭(eG3)
+    sel_mat_raw = selection['mat']     # 예: SUS304 (스텐)
+    
+    # [핵심 수정 2] 매칭 키워드 확장 (유연성 확보)
+    # 사용자가 '안전증방폭(eG3)'을 선택했다면 -> ['방폭', 'eG3', 'EG3', '안전증'] 키워드를 모두 가짐
+    current_options = []
+    
+    # 1. 방폭 관련 키워드 생성
+    if "비방폭" in sel_explo_raw:
+        current_options.append("비방폭")
+    else:
+        current_options.append("방폭") # 기본적으로 방폭임
+        if "eG3" in sel_explo_raw or "EG3" in sel_explo_raw:
+            current_options.extend(["eG3", "EG3", "안전증"])
+        if "d2G4" in sel_explo_raw:
+            current_options.extend(["d2G4", "내압"])
+
+    # 2. 재질 관련 키워드 생성
+    if "SUS" in sel_mat_raw or "스텐" in sel_mat_raw:
+        current_options.extend(["스텐", "SUS", "써스"])
+    else:
+        current_options.extend(["철", "SS400", "일반"])
+
+    # --- 태그 검사 시작 ---
+    for tag in tags:
+        # 태그가 비어있으면 패스
+        if not tag: continue
+
+        # 1. '횡형밀' 특수 그룹 체크
+        if "횡형밀" in tag:
+            if sel_equip in ["베스트밀", "퍼펙트밀", "탑밀"]: 
+                # 횡형밀이라도 뒤에 옵션(예: 횡형밀@-스텐@)이 붙을 수 있으므로 아래 로직을 태움
+                pass 
+            else:
+                continue # 횡형밀이 아니면 다음 태그로
+
+        # 태그 분해 (예: 탑밀30L-철@ -> ['탑밀30L', '철@'])
+        tokens = [t.strip().replace("@", "") for t in tag.split('-')]
+        head = tokens[0] # 설비명 부분
+        
+        # 2. 설비명 및 용량 일치 여부 확인
+        is_equip_match = False
+        
+        # Case A: '횡형밀' 같은 그룹명인 경우 (이미 위에서 필터링 했으므로 통과)
+        if "횡형밀" in head:
+            is_equip_match = True
+            
+        # Case B: '탑밀' 처럼 용량 없이 설비명만 있는 경우 (@가 붙어있거나 텍스트만 일치)
+        elif head == sel_equip:
+            is_equip_match = True
+            
+        # Case C: '탑밀30L' 처럼 용량까지 지정된 경우
+        # 아까 만든 sel_capa ("30L")와 결합해서 비교
+        elif head == f"{sel_equip}{sel_capa}":
+            is_equip_match = True
+            
+        # 설비 조건이 안 맞으면 이 태그는 탈락
+        if not is_equip_match:
+            continue
+
+        # 3. 옵션(재질/방폭) 상세 일치 여부 확인
+        # tokens[1:] 부터는 '철', '방폭', 'EG3' 같은 조건들임
+        # 이 조건들이 위에서 만든 current_options 리스트에 다 들어있어야 함
+        
         is_option_match = True
         if len(tokens) > 1:
-            current_options = [explo_key, mat_key]
-            for req_token in tokens[1:]:
-                req_clean = req_token.replace("@", "")
-                if req_clean not in current_options:
+            for req in tokens[1:]:
+                # 태그에 적힌 조건(req)이 현재 내 상황(current_options)에 없으면 탈락
+                # 대소문자 무시를 위해 upper() 사용 추천하지만, 일단 단순 비교
+                match_found = False
+                for my_opt in current_options:
+                    if req.upper() == my_opt.upper():
+                        match_found = True
+                        break
+                
+                if not match_found:
                     is_option_match = False
                     break
         
         if is_option_match:
-            return True
+            return True # 하나라도 조건에 맞는 태그를 찾으면 즉시 성공!
             
     return False
 
@@ -490,3 +545,4 @@ with tab3:
     else:
         # ... (기존 입고 처리 코드 유지)
         pass # 지면 관계상 생략, 실제 구동시엔 위쪽 코드 그대로 쓰시면 됩니다.
+
