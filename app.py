@@ -276,13 +276,18 @@ st.title("🏭 베스트 화학 통합 ERP")
 tab1, tab2, tab3 = st.tabs(["📑 견적 관리(영업)", "📦 자재 발주(구매)", "✅ 입고 확인(창고)"])
 
 # [탭 1] 견적 시스템
+# [탭 1] 견적 시스템
 with tab1:
-    # (기존 코드 유지 - 생략 없이 그대로 사용 가능)
-    st.subheader("1. 견적 상세 조건")
+    st.header("📑 견적 관리 및 산출")
+    st.subheader("1. 견적 상세 조건 입력")
+    
     col_input1, col_input2 = st.columns(2)
+    
     with col_input1:
+        # 설비 종류 선택
         equip_type = st.selectbox("설비 종류", ["베스트밀", "퍼펙트밀", "탑밀", "바스켓밀", "믹서", "진공탈포기", "충진기"])
         
+        # 용량 매핑 데이터
         CAPACITY_MAP = {
             "베스트밀": [5, 10, 30, 40, 50],
             "퍼펙트밀": [5, 10, 30, 40, 50],
@@ -290,6 +295,7 @@ with tab1:
             "바스켓밀": ["1~4L", "20~40L", "100L", "200L", "300L", "500L", "1000L", "3000L", "5000L"],
             "충진기": ["1구", "2구"]
         }
+        
         capacity = None
         if equip_type in ["믹서", "진공탈포기"]:
             st.info("💡 믹서/탈포기는 메인 모터 기준")
@@ -299,23 +305,130 @@ with tab1:
             capacity = st.selectbox("설비 용량", CAPACITY_MAP.get(equip_type, []))
 
     with col_input2:
+        # 모터 마력 리스트
         ALL_MOTORS = ["없음", "1HP", "2HP", "3HP", "5HP", "10HP", "15HP", "20HP", "30HP", "40HP", "50HP", "60HP", "75HP", "100HP", "125HP", "200HP"]
-        main_hp = st.selectbox("메인 모터", ALL_MOTORS)
+        
+        # 기본값 자동 선택 로직 (편의성)
+        default_main_idx = 0
+        if capacity == 30 and equip_type in ["베스트밀", "퍼펙트밀"]: default_main_idx = ALL_MOTORS.index("30HP")
+        
+        main_hp = st.selectbox("메인 모터", ALL_MOTORS, index=default_main_idx)
         sub_hp = st.selectbox("서브 모터", ALL_MOTORS)
 
     st.divider()
+    
+    # 옵션 선택
     c_opt1, c_opt2, c_opt3 = st.columns(3)
     with c_opt1:
         explosion_type = st.radio("방폭 타입", ["비방폭", "EG3", "d2G4 (내압방폭)"])
     with c_opt2:
         material_radio = st.radio("접액부 재질", ["일반 철 (SS400)", "스테인리스 (SUS304)"])
     with c_opt3:
-        options = st.text_area("기타 옵션")
+        options = st.text_area("기타 옵션 (특이사항)")
     
+    # ----------------------------------------------------------------
+    # [가견적 산출 버튼 로직]
+    # ----------------------------------------------------------------
     if st.button("📝 가견적 산출 (미리보기)", type="primary"):
-         # (가견적 로직은 기존과 동일하므로 생략 - 기능상 필요한 경우 복원)
-         st.success("견적 로직 실행됨 (상세 내용은 생략)")
+        now = datetime.now()
+        quote_id = now.strftime("%y%m%d%H%M") # 년월일시분
+        
+        # 1. 세션에 기본 정보 저장
+        st.session_state['quote_data'] = {
+            "견적ID": quote_id,
+            "날짜": now.strftime("%Y-%m-%d"),
+            "설비": equip_type,
+            "용량": str(capacity) if capacity else "-",
+            "메인": main_hp,
+            "서브": sub_hp,
+            "방폭": explosion_type,
+            "재질": material_radio,
+            "옵션": options
+        }
+        
+        # 2. 기초 BOM(상세내역) 데이터프레임 생성
+        # 실제 단가는 0으로 두고, 아래 에디터에서 사장님이 직접 입력하게 함
+        initial_bom = [
+            {"항목": "Main Motor", "규격": main_hp, "단가": 0, "수량": 1, "비고": "자동선택"},
+            {"항목": "Sub Motor", "규격": sub_hp, "단가": 0, "수량": 1, "비고": "자동선택"},
+            {"항목": "Body Vessel (가공/제관)", "규격": f"{capacity} ({material_radio})", "단가": 0, "수량": 1, "비고": "본체 및 프레임"},
+            {"항목": "Control Panel (전장)", "규격": explosion_type, "단가": 0, "수량": 1, "비고": "인버터 포함"},
+            {"항목": "기타 자재 (배관/볼트)", "규격": "-", "단가": 0, "수량": 1, "비고": "소모 자재 일체"},
+            {"항목": "노무비 및 경비", "규격": "-", "단가": 0, "수량": 1, "비고": "조립/시운전"},
+            {"항목": "이윤 및 기업관리비", "규격": "-", "단가": 0, "수량": 1, "비고": ""}
+        ]
+        st.session_state['quote_detail_df'] = pd.DataFrame(initial_bom)
 
+    # ----------------------------------------------------------------
+    # [결과 표시 및 수정 화면]
+    # ----------------------------------------------------------------
+    if 'quote_data' in st.session_state and st.session_state['quote_data']:
+        st.divider()
+        st.subheader(f"📋 견적서 작성 (ID: {st.session_state['quote_data']['견적ID']})")
+        
+        col_res1, col_res2 = st.columns([1, 2])
+        
+        # 왼쪽: 요약 정보 표시
+        with col_res1:
+            st.info("🔹 견적 요약")
+            q = st.session_state['quote_data']
+            st.write(f"**설비:** {q['설비']} {q['용량']}")
+            st.write(f"**사양:** {q['방폭']} / {q['재질']}")
+            st.write(f"**모터:** Main {q['메인']}, Sub {q['서브']}")
+            st.text_area("옵션메모", q['옵션'], disabled=True)
+        
+        # 오른쪽: 상세 내역 에디터 (단가 입력용)
+        with col_res2:
+            st.write("👇 **아래 표에서 '단가'와 '수량'을 수정하세요.**")
+            
+            if 'quote_detail_df' in st.session_state:
+                # 데이터 에디터 출력
+                edited_df = st.data_editor(
+                    st.session_state['quote_detail_df'],
+                    num_rows="dynamic", # 행 추가/삭제 가능
+                    column_config={
+                        "단가": st.column_config.NumberColumn("단가 (원)", format="%d"),
+                        "수량": st.column_config.NumberColumn("수량", format="%d"),
+                    },
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                # 총액 실시간 계산
+                total_estimate = (edited_df['단가'] * edited_df['수량']).sum()
+                st.metric("💰 총 견적 예상금액", f"{total_estimate:,.0f} 원")
+                
+                # [DB 저장 버튼]
+                if st.button("💾 이대로 견적 DB에 저장", type="primary"):
+                    # 1. 데이터 준비
+                    q = st.session_state['quote_data']
+                    row_data = [
+                        q['견적ID'], 
+                        q['날짜'], 
+                        q['설비'], 
+                        q['용량'], 
+                        q['메인'], 
+                        q['서브'], 
+                        q['방폭'], 
+                        q['재질'], 
+                        q['옵션'], 
+                        int(total_estimate) # 총액
+                    ]
+                    
+                    # 2. 구글 시트(견적DB)에 추가
+                    try:
+                        ws_quote.append_row(row_data)
+                        st.success("✅ 견적 내역이 성공적으로 저장되었습니다!")
+                        st.balloons() # 축하 효과
+                        
+                        # (선택사항) 저장 후 초기화 하고 싶으면 아래 주석 해제
+                        # del st.session_state['quote_data']
+                        # del st.session_state['quote_detail_df']
+                        # st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"저장 중 오류 발생: {e}")
+                        
 # [탭 2] 자재 발주 (대폭 수정됨)
 with tab2:
     st.header("📦 자재 발주 시스템")
@@ -642,5 +755,6 @@ with tab3:
                     st.success(f"✅ 총 {success_count}건 입고 완료! 재고 수량이 증가했습니다.")
                     time.sleep(1.5)
                     st.rerun()
+
 
 
